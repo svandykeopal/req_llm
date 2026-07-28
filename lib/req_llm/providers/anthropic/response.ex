@@ -34,8 +34,6 @@ defmodule ReqLLM.Providers.Anthropic.Response do
 
   """
 
-  require Logger
-
   alias ReqLLM.Message.ReasoningDetails
 
   # Content blocks produced by Anthropic server tools. `server_tool_use` is
@@ -443,14 +441,6 @@ defmodule ReqLLM.Providers.Anthropic.Response do
   defp chunk_to_tool_call(_), do: nil
 
   defp parse_usage(usage) when is_map(usage) and map_size(usage) > 0 do
-    # TEMPORARY PROBE: parse_usage builds a fresh flat map and drops every key it
-    # doesn't name, so the provider's own breakdown — including Anthropic's
-    # `output_tokens_details.thinking_tokens` — is invisible to every caller
-    # downstream. Log the map as it arrives to settle whether the deployment
-    # (Azure Foundry, which rewrites wire formats) reports thinking tokens at all.
-    # Usage is numeric-only; no reasoning text passes through here.
-    Logger.debug(fn -> "anthropic raw usage: #{inspect(usage)}" end)
-
     input = Map.get(usage, "input_tokens", 0)
     output = Map.get(usage, "output_tokens", 0)
     cache_read = Map.get(usage, "cache_read_input_tokens", 0)
@@ -465,7 +455,9 @@ defmodule ReqLLM.Providers.Anthropic.Response do
       cached_tokens: cache_read,
       cache_read_input_tokens: cache_read,
       cache_creation_input_tokens: cache_creation,
-      reasoning_tokens: reasoning_tokens
+      reasoning_tokens: reasoning_tokens,
+      # Carries the provider's map through verbatim.
+      provider_usage: usage
     }
 
     if map_size(tool_usage) > 0 do

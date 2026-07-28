@@ -43,7 +43,7 @@ defmodule ReqLLM.Usage.Normalize do
     cache_creation = get_cache_creation_tokens(usage, input, input_includes_cached)
     total_tokens = total_tokens_from_usage(usage, input, output)
 
-    %{
+    normalized = %{
       input: input,
       output: output,
       reasoning: reasoning,
@@ -60,6 +60,17 @@ defmodule ReqLLM.Usage.Normalize do
       cache_creation_tokens: cache_creation,
       reasoning_tokens: reasoning
     }
+
+    # The provider's own usage payload carried through for callers that need a
+    # field ReqLLM does not model. Preserved only when present, so a provider
+    # that sets nothing keeps returning the exact map it returned before.
+    case MapAccess.get(usage, :provider_usage) || MapAccess.get(usage, "provider_usage") do
+      provider_usage when is_map(provider_usage) ->
+        Map.put(normalized, :provider_usage, provider_usage)
+
+      _ ->
+        normalized
+    end
   end
 
   defp first_present(usage, keys) do
