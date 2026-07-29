@@ -34,6 +34,8 @@ defmodule ReqLLM.Providers.Anthropic.Response do
 
   """
 
+  require Logger
+
   alias ReqLLM.Message.ReasoningDetails
 
   # Content blocks produced by Anthropic server tools. `server_tool_use` is
@@ -160,6 +162,7 @@ defmodule ReqLLM.Providers.Anthropic.Response do
           {[ReqLLM.StreamChunk.t()], map()}
   def decode_stream_event(%{data: data}, _model, state) when is_map(data) do
     state = ensure_stream_state(state)
+    trace(data)
 
     case data do
       %{"type" => "message_start", "message" => message} ->
@@ -191,6 +194,71 @@ defmodule ReqLLM.Providers.Anthropic.Response do
   def decode_stream_event(_event, _model, state) do
     {[], ensure_stream_state(state)}
   end
+
+  # Diagnostic trace of the raw SSE timeline, enabled with
+  # `config :req_llm, stream_trace: true`. Deltas are summarized at their
+  # block's close rather than logged individually, so what remains is one line
+  # per event that can stall a turn — block starts, block closes, and the pings
+  # that are the only traffic while a server tool runs. Each line carries the
+  # gap since the previous event, which is what an idle timeout actually sees.
+  defp trace(data) do
+    if Application.get_env(:req_llm, :stream_trace, false) do
+      now = System.monotonic_time(:millisecond)
+      previous = Process.get(:anthropic_trace_last_ms, now)
+      Process.put(:anthropic_trace_last_ms, now)
+
+      case trace_label(data, now) do
+        nil -> :ok
+        label -> Logger.info("[anthropic stream] +#{now - previous}ms #{label}")
+      end
+    end
+
+    :ok
+  end
+
+  defp trace_label(
+         %{"type" => "content_block_start", "index" => index, "content_block" => block},
+         now
+       ) do
+    Process.put({:anthropic_trace_block, index}, {0, 0, now})
+
+    details =
+      [block["name"], block["id"], block["tool_use_id"]]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" ")
+
+    "content_block_start[#{index}] #{block["type"]} #{details}"
+  end
+
+  defp trace_label(%{"type" => "content_block_delta", "index" => index, "delta" => delta}, _now) do
+    {count, bytes, started_at} = Process.get({:anthropic_trace_block, index}, {0, 0, nil})
+    fragment = delta["partial_json"] || delta["text"] || delta["thinking"] || ""
+
+    Process.put(
+      {:anthropic_trace_block, index},
+      {count + 1, bytes + byte_size(fragment), started_at}
+    )
+
+    nil
+  end
+
+  defp trace_label(%{"type" => "content_block_stop", "index" => index}, now) do
+    case Process.get({:anthropic_trace_block, index}) do
+      {count, bytes, started_at} when is_integer(started_at) ->
+        "content_block_stop[#{index}] #{count} deltas, #{bytes}B, open #{now - started_at}ms"
+
+      _ ->
+        "content_block_stop[#{index}]"
+    end
+  end
+
+  defp trace_label(%{"type" => "message_delta", "delta" => delta}, _now) do
+    "message_delta stop_reason=#{inspect(delta["stop_reason"])}"
+  end
+
+  defp trace_label(%{"type" => "error", "error" => error}, _now), do: "error #{inspect(error)}"
+  defp trace_label(%{"type" => type}, _now), do: type
+  defp trace_label(_data, _now), do: nil
 
   @doc false
   @spec flush_stream_state(LLMDB.Model.t(), map() | nil) :: {[ReqLLM.StreamChunk.t()], map()}

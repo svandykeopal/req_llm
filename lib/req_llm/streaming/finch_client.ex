@@ -174,6 +174,7 @@ defmodule ReqLLM.Streaming.FinchClient do
             acc
 
           :done, acc ->
+            trace(":done")
             safe_http_event(stream_server_pid, :done)
             acc
         end
@@ -192,6 +193,7 @@ defmodule ReqLLM.Streaming.FinchClient do
           end
 
         receive_timeout = Keyword.get(opts, :receive_timeout, default_timeout)
+        trace("start receive_timeout=#{receive_timeout}ms")
 
         try do
           case Retry.stream(
@@ -231,6 +233,18 @@ defmodule ReqLLM.Streaming.FinchClient do
     error ->
       Logger.error("Failed to start streaming task: #{inspect(error)}")
       {:error, {:task_start_failed, error}}
+  end
+
+  # Companion to the Anthropic SSE trace (`config :req_llm, stream_trace: true`):
+  # marks where the transport itself begins and ends, so a stall can be pinned
+  # on the socket rather than on what the provider decoded from it. Failures
+  # already log unconditionally below.
+  defp trace(message) do
+    if Application.get_env(:req_llm, :stream_trace, false) do
+      Logger.info("[finch stream] #{message}")
+    end
+
+    :ok
   end
 
   # Apply config-level adapter then per-request callback, in that order.
